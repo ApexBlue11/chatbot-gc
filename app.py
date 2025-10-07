@@ -147,13 +147,15 @@ def get_manual_api_key(service: str) -> Optional[str]:
     )
     if manual_key:
         st.session_state[key_name] = manual_key
+        # This combination ensures that the app reruns with the new key in session state
+        # and doesn't proceed with the old (empty) key value in the current script run.
         st.rerun()
-        st.stop() # Stop execution of the current script run to allow rerun to complete
+        st.stop() 
     return None
 
 
 def call_openai_api(prompt: str, api_key: str, context: List[Dict[str, str]]) -> str:
-    """Calls the OpenAI Chat Completions API."""
+    """Calls the OpenAI Chat Completions API with improved error handling."""
     api_url = "https://api.openai.com/v1/chat/completions"
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     messages = context + [{"role": "user", "content": prompt}]
@@ -162,65 +164,61 @@ def call_openai_api(prompt: str, api_key: str, context: List[Dict[str, str]]) ->
     try:
         with st.spinner("🤖 OpenAI is thinking..."):
             response = requests.post(api_url, headers=headers, json=payload, timeout=90)
-            response.raise_for_status()
+            response.raise_for_status() # This will trigger the HTTPError exception for bad status codes
             response_data = response.json()
             return response_data["choices"][0]["message"]["content"].strip()
     except requests.exceptions.HTTPError as http_err:
         try:
-            error_message = http_err.response.json().get("error", {}).get("message", "An unknown HTTP error occurred.")
+            # Try to parse the detailed error message from the API response
+            error_details = http_err.response.json()
+            error_message = error_details.get("error", {}).get("message", "An unknown HTTP error occurred.")
         except json.JSONDecodeError:
-            error_message = http_err.response.text
+            error_message = http_err.response.text or "Failed to get a detailed error message."
         st.error(f"OpenAI API Error: {error_message}")
-        return "Sorry, I encountered an error. Please check your API key and try again."
+        return "Sorry, the request to OpenAI failed. Please check the error message above."
     except Exception as e:
         st.error(f"An unexpected error occurred while contacting OpenAI: {e}")
         return "Sorry, I couldn't process your request due to an unexpected error."
 
 def call_gemini_api(prompt: str, api_key: str, context: List[Dict[str, str]]) -> str:
-    """Calls the Google Gemini API."""
-    api_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key={api_key}"
+    """Calls the Google Gemini API with improved error handling."""
+    # Using the latest model as per the documentation
+    api_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key={api_key}"
     headers = {"Content-Type": "application/json"}
     
-    # Format context for Gemini
     contents = []
+    system_instruction = None
+
     for message in context:
-        # Skip system prompt for contents, it will be handled separately
         if message["role"] == "system":
-            continue
-        role = "user" if message["role"] == "user" else "model"
-        contents.append({"role": role, "parts": [{"text": message["content"]}]})
+            system_instruction = {"parts": [{"text": message["content"]}]}
+        else:
+            role = "user" if message["role"] == "user" else "model"
+            contents.append({"role": role, "parts": [{"text": message["content"]}]})
     
-    # Add the current user prompt
     contents.append({"role": "user", "parts": [{"text": prompt}]})
 
-    # Find system prompt
-    system_prompt_text = ""
-    for message in context:
-        if message["role"] == "system":
-            system_prompt_text = message["content"]
-            break
-
     payload = {"contents": contents}
-    if system_prompt_text:
-        payload["systemInstruction"] = {"role": "system", "parts": [{"text": system_prompt_text}]}
-
+    if system_instruction:
+        payload["systemInstruction"] = system_instruction
 
     try:
         with st.spinner("🤖 Gemini is thinking..."):
             response = requests.post(api_url, headers=headers, json=payload, timeout=90)
             response.raise_for_status()
             response_data = response.json()
-            # Handle cases where the model might be blocked for safety
             if 'candidates' not in response_data or not response_data['candidates']:
-                return "The model's response was blocked. This may be due to the prompt or response being flagged by the safety filter."
+                finish_reason = response_data.get('promptFeedback', {}).get('blockReason', 'UNKNOWN')
+                return f"The model's response was blocked. Reason: {finish_reason}. This may be due to the prompt or response being flagged by the safety filter."
             return response_data['candidates'][0]['content']['parts'][0]['text'].strip()
     except requests.exceptions.HTTPError as http_err:
         try:
-            error_message = http_err.response.json().get("error", {}).get("message", "An unknown HTTP error occurred.")
+            error_details = http_err.response.json()
+            error_message = error_details.get("error", {}).get("message", "An unknown HTTP error occurred.")
         except json.JSONDecodeError:
-            error_message = http_err.response.text
+            error_message = http_err.response.text or "Failed to get a detailed error message."
         st.error(f"Gemini API Error: {error_message}")
-        return "Sorry, I encountered an error. Please check your API key and try again."
+        return "Sorry, the request to Gemini failed. Please check the error message above."
     except Exception as e:
         st.error(f"An unexpected error occurred while contacting Gemini: {e}")
         return "Sorry, I couldn't process your request due to an unexpected error."
