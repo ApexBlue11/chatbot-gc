@@ -72,6 +72,7 @@ st.markdown("""
 }
 .stChatMessage {
     background-color: #f0f2f6;
+    color: #262730; /* Added for text visibility */
     border-radius: 0.5rem;
     padding: 1rem;
     margin-bottom: 1rem;
@@ -194,7 +195,7 @@ def call_openai_api(prompt: str, api_key: str, context: List[Dict[str, str]]) ->
 def call_gemini_api(prompt: str, api_key: str, context: List[Dict[str, str]]) -> str:
     """Calls the Google Gemini API (v1) using a stable model from the provided list."""
     # Using a stable model name confirmed from user-provided CSV
-    model_name = "gemini-2.5-flash" 
+    model_name = "gemini-1.5-flash" 
     api_url = f"https://generativelanguage.googleapis.com/v1/models/{model_name}:generateContent?key={api_key}"
     headers = {"Content-Type": "application/json"}
 
@@ -997,7 +998,7 @@ def main():
             if st.button("🗑️ Clear Results", key="clear_results"):
                 if 'analysis_data' in st.session_state: del st.session_state['analysis_data']
                 if 'last_query' in st.session_state: del st.session_state['last_query']
-                if 'messages' in st.session_state: del st.session_state['messages']
+                if 'messages' in st.session_state: del st.session_state.messages
                 st.rerun()
         with col2: st.markdown(f"**Analyzing:** {classification.extracted_identifier}")
         
@@ -1118,17 +1119,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-{
-  "contents": [
-    {
-      "role": "user",
-      "parts": [
-        {
-          "text": "You are a knowledgeable assistant specializing in genomics and bioinformatics. Help users understand genetic variant data. When summarizing, be accurate, cite data sources, and be traceable. You can also answer general questions.\n\n---\n\nPlease summarize and interpret the results."
-        }
-      ]
-    }
-  ]
-}
 
