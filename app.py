@@ -133,7 +133,7 @@ class GenomicQueryRouter:
 # --- Start of AI Assistant Functions ---
 
 def get_manual_api_key(service: str) -> Optional[str]:
-    """Gets the API key from manual input and caches it."""
+    """Gets the API key from manual input, caches it, and correctly handles Streamlit's rerun."""
     key_name = f"{service.lower()}_api_key"
     
     if key_name in st.session_state and st.session_state[key_name]:
@@ -148,6 +148,7 @@ def get_manual_api_key(service: str) -> Optional[str]:
     if manual_key:
         st.session_state[key_name] = manual_key
         st.rerun()
+        st.stop() # Stop execution of the current script run to allow rerun to complete
     return None
 
 
@@ -165,7 +166,10 @@ def call_openai_api(prompt: str, api_key: str, context: List[Dict[str, str]]) ->
             response_data = response.json()
             return response_data["choices"][0]["message"]["content"].strip()
     except requests.exceptions.HTTPError as http_err:
-        error_message = response.json().get("error", {}).get("message", "An unknown HTTP error occurred.")
+        try:
+            error_message = http_err.response.json().get("error", {}).get("message", "An unknown HTTP error occurred.")
+        except json.JSONDecodeError:
+            error_message = http_err.response.text
         st.error(f"OpenAI API Error: {error_message}")
         return "Sorry, I encountered an error. Please check your API key and try again."
     except Exception as e:
@@ -179,20 +183,42 @@ def call_gemini_api(prompt: str, api_key: str, context: List[Dict[str, str]]) ->
     
     # Format context for Gemini
     contents = []
-    for message in context + [{"role": "user", "content": prompt}]:
+    for message in context:
+        # Skip system prompt for contents, it will be handled separately
+        if message["role"] == "system":
+            continue
         role = "user" if message["role"] == "user" else "model"
         contents.append({"role": role, "parts": [{"text": message["content"]}]})
+    
+    # Add the current user prompt
+    contents.append({"role": "user", "parts": [{"text": prompt}]})
+
+    # Find system prompt
+    system_prompt_text = ""
+    for message in context:
+        if message["role"] == "system":
+            system_prompt_text = message["content"]
+            break
 
     payload = {"contents": contents}
+    if system_prompt_text:
+        payload["systemInstruction"] = {"role": "system", "parts": [{"text": system_prompt_text}]}
+
 
     try:
         with st.spinner("🤖 Gemini is thinking..."):
             response = requests.post(api_url, headers=headers, json=payload, timeout=90)
             response.raise_for_status()
             response_data = response.json()
+            # Handle cases where the model might be blocked for safety
+            if 'candidates' not in response_data or not response_data['candidates']:
+                return "The model's response was blocked. This may be due to the prompt or response being flagged by the safety filter."
             return response_data['candidates'][0]['content']['parts'][0]['text'].strip()
     except requests.exceptions.HTTPError as http_err:
-        error_message = response.json().get("error", {}).get("message", "An unknown HTTP error occurred.")
+        try:
+            error_message = http_err.response.json().get("error", {}).get("message", "An unknown HTTP error occurred.")
+        except json.JSONDecodeError:
+            error_message = http_err.response.text
         st.error(f"Gemini API Error: {error_message}")
         return "Sorry, I encountered an error. Please check your API key and try again."
     except Exception as e:
@@ -522,7 +548,9 @@ def display_comprehensive_myvariant_data(myvariant_data):
         with col3:
             gene_name = (myvariant_data.get('clinvar', {}).get('gene', {}).get('symbol') or 
                          myvariant_data.get('snpeff', {}).get('ann', [{}])[0].get('genename') or 
-                         myvariant_data.get('dbnsfp', {}).get('genename', [None])[0] or 'N/A')
+                         (myvariant_data.get('dbnsfp', {}).get('genename') if isinstance(myvariant_data.get('dbnsfp', {}).get('genename'), str) else None) or
+                         (myvariant_data.get('dbnsfp', {}).get('genename', [None])[0] if isinstance(myvariant_data.get('dbnsfp', {}).get('genename'), list) else None) or 'N/A')
+
             st.write(f"**Gene:** {gene_name}")
             rsid = myvariant_data.get('rsid') or myvariant_data.get('dbsnp', {}).get('rsid') or 'N/A'
             st.write(f"**RSID:** {rsid}")
@@ -585,8 +613,6 @@ def display_comprehensive_myvariant_data(myvariant_data):
 
     with data_tabs[2]: # Population Frequencies
         st.subheader("Population Frequency Data")
-        st.sidebar.markdown("### 📊 Population Filters")
-        freq_threshold = st.sidebar.slider("Max Allele Frequency", min_value=0.0, max_value=1.0, value=1.0, step=0.001, format="%.3f", help="Show populations with allele frequency at or below this value.")
         freq_tabs = st.tabs(["gnomAD Exome", "gnomAD Genome", "1000 Genomes", "ExAC", "Raw Data"])
         
         with freq_tabs[0]:
@@ -599,7 +625,7 @@ def display_comprehensive_myvariant_data(myvariant_data):
                     populations = {'af': 'Overall', 'af_afr': 'African', 'af_amr': 'Latino', 'af_asj': 'Ashkenazi Jewish', 'af_eas': 'East Asian', 'af_fin': 'Finnish', 'af_nfe': 'Non-Finnish European', 'af_sas': 'South Asian', 'af_oth': 'Other'}
                     for pop_key, pop_name in populations.items():
                         freq = af_data.get(pop_key)
-                        if freq is not None and freq > 0 and freq <= freq_threshold:
+                        if freq is not None and freq > 0 and freq <= st.session_state.get('freq_threshold', 1.0):
                             an, ac = an_data.get(pop_key.replace('af', 'an')), ac_data.get(pop_key.replace('af', 'ac'))
                             pop_data.append({'Population': pop_name, 'Frequency': freq, 'Allele Count': ac or 'N/A', 'Total Alleles': an or 'N/A'})
                     if pop_data:
@@ -622,7 +648,7 @@ def display_comprehensive_myvariant_data(myvariant_data):
                     populations = {'af': 'Overall', 'af_afr': 'African', 'af_amr': 'Latino', 'af_ami': 'Amish', 'af_asj': 'Ashkenazi Jewish', 'af_eas': 'East Asian', 'af_fin': 'Finnish', 'af_mid': 'Middle Eastern', 'af_nfe': 'Non-Finnish European', 'af_sas': 'South Asian', 'af_oth': 'Other'}
                     for pop_key, pop_name in populations.items():
                         freq = af_data.get(pop_key)
-                        if freq is not None and freq > 0 and freq <= freq_threshold:
+                        if freq is not None and freq > 0 and freq <= st.session_state.get('freq_threshold', 1.0):
                             an, ac = an_data.get(pop_key.replace('af', 'an')), ac_data.get(pop_key.replace('af', 'ac'))
                             pop_data.append({'Population': pop_name, 'Frequency': freq, 'Allele Count': ac or 'N/A', 'Total Alleles': an or 'N/A'})
                     if pop_data:
@@ -639,10 +665,21 @@ def display_comprehensive_myvariant_data(myvariant_data):
                 if isinstance(kg_data, list): kg_data = kg_data[0] # Handle list case
                 
                 pop_data = []
+                # Note: dbnsfp provides af for each pop directly
                 populations = {'af':'Global', 'afr_af':'African', 'amr_af':'American', 'eas_af':'East Asian', 'eur_af':'European', 'sas_af':'South Asian'}
                 for key, name in populations.items():
-                    freq = kg_data.get(key)
-                    if freq is not None and freq > 0 and freq <= freq_threshold:
+                    # The key from dbnsfp is slightly different
+                    actual_key = key.split('_')[0] if '_' in key else 'af'
+                    freq_data = kg_data.get(actual_key)
+                    
+                    freq = None
+                    if isinstance(freq_data, dict):
+                        freq = freq_data.get('af')
+                    elif actual_key == 'af':
+                        freq = kg_data.get('af')
+
+
+                    if freq is not None and freq > 0 and freq <= st.session_state.get('freq_threshold', 1.0):
                         pop_data.append({'Population': name, 'Frequency': freq})
                 
                 if pop_data:
@@ -651,17 +688,24 @@ def display_comprehensive_myvariant_data(myvariant_data):
                     st.info("No 1000 Genomes populations match the current filter.")
             else:
                 st.info("No 1000 Genomes data available.")
-        
+
         with freq_tabs[3]: # ExAC
-            exac_data = myvariant_data.get('exac', {})
+            exac_data = myvariant_data.get('exac', {}) or myvariant_data.get('dbnsfp', {}).get('exac', {})
+
             if exac_data:
                 st.markdown("**Exome Aggregation Consortium (ExAC)**")
                 if isinstance(exac_data, list): exac_data = exac_data[0]
                 pop_data = []
-                populations = {'af':'Global', 'af_afr':'African', 'af_amr':'Latino', 'af_eas':'East Asian', 'af_fin':'Finnish', 'af_nfe':'Non-Finnish European', 'af_sas':'South Asian', 'af_oth':'Other'}
+                populations = {'af':'Global', 'afr':'African', 'amr':'Latino', 'eas':'East Asian', 'fin':'Finnish', 'nfe':'Non-Finnish European', 'sas':'South Asian', 'oth':'Other'}
                 for key, name in populations.items():
-                    freq = exac_data.get(key)
-                    if freq is not None and freq > 0 and freq <= freq_threshold:
+                    freq_val = exac_data.get(key)
+                    freq = None
+                    if isinstance(freq_val, dict):
+                        freq = freq_val.get('af')
+                    elif isinstance(freq_val, float):
+                        freq = freq_val
+                    
+                    if freq is not None and freq > 0 and freq <= st.session_state.get('freq_threshold', 1.0):
                         pop_data.append({'Population': name, 'Frequency': freq})
                 if pop_data:
                     st.dataframe(pd.DataFrame(pop_data), use_container_width=True)
@@ -677,7 +721,7 @@ def display_comprehensive_myvariant_data(myvariant_data):
                 for key, value in data.items():
                     full_key = f"{prefix}.{key}" if prefix else key
                     if 'af' in key.lower() or 'freq' in key.lower():
-                        if isinstance(value, (int, float)) and value > 0 and value <= freq_threshold:
+                        if isinstance(value, (int, float)) and value > 0 and value <= st.session_state.get('freq_threshold', 1.0):
                             freq_fields[full_key] = value
                     elif isinstance(value, dict):
                         collect_freq_fields(value, full_key)
@@ -686,7 +730,6 @@ def display_comprehensive_myvariant_data(myvariant_data):
                 st.dataframe(pd.DataFrame([{'Field': k, 'Frequency': v} for k,v in sorted(freq_fields.items())]), use_container_width=True)
             else:
                 st.info("No frequency fields match the current filter.")
-
 
     with data_tabs[3]: # ClinVar
         st.subheader("ClinVar Clinical Annotations")
@@ -792,7 +835,7 @@ def main():
         - **ClinGen Allele Registry**: Canonical allele identifiers
         - **MyVariant.info**: Comprehensive variant annotations
         - **Ensembl VEP**: Variant effect predictions
-        - **AI Assistant**: Powered by OpenAI for summarization and Q&A
+        - **AI Assistant**: Powered by OpenAI & Google Gemini for summarization and Q&A
         """)
         st.markdown("### Supported Formats")
         st.code("HGVS: NM_002496.3:c.64C>T")
@@ -802,6 +845,15 @@ def main():
             st.session_state.example_input = "NM_002496.3:c.64C>T"
         if st.button("Load Example 2: BRCA1", key="example2"):
             st.session_state.example_input = "NM_007294.3:c.5266dupC"
+        
+        st.sidebar.markdown("### 📊 Population Filters")
+        st.session_state.freq_threshold = st.sidebar.slider(
+            "Max Allele Frequency", 
+            min_value=0.0, max_value=1.0, value=st.session_state.get('freq_threshold', 1.0), 
+            step=0.001, format="%.3f", 
+            help="Show populations with allele frequency at or below this value."
+        )
+
 
     st.markdown('<div class="section-header">Variant Input</div>', unsafe_allow_html=True)
     default_value = getattr(st.session_state, 'example_input', "")
