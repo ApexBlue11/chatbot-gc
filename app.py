@@ -160,15 +160,13 @@ def call_openai_api(prompt: str, api_key: str, context: List[Dict[str, str]]) ->
         "Content-Type": "application/json"
     }
 
-    # Updated model + payload structure
     payload = {
         "model": "gpt-4o-mini",
         "messages": context + [{"role": "user", "content": prompt}],
-        "max_tokens": 2048, # Correct parameter for max output tokens
+        "max_tokens": 2048,
         "temperature": 0.5
     }
     
-    # Store payload for debugging
     st.session_state['last_ai_payload'] = payload
 
     try:
@@ -195,39 +193,31 @@ def call_openai_api(prompt: str, api_key: str, context: List[Dict[str, str]]) ->
 
 def call_gemini_api(prompt: str, api_key: str, context: List[Dict[str, str]]) -> str:
     """Calls the Google Gemini API (v1) using the latest endpoint."""
-    api_url = f"https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key={api_key}"
+    api_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key={api_key}"
     headers = {"Content-Type": "application/json"}
 
-    # Rebuild context properly for Gemini schema, injecting system prompt if needed
     messages = []
     system_instruction = next((msg["content"] for msg in context if msg["role"] == "system"), None)
     
-    is_first_user_turn = True
-    for msg in context:
-        if msg["role"] == "system":
-            continue
-        
-        current_content = msg["content"]
-        # Prepend system instruction to the very first user message in the history
-        if msg["role"] == "user" and is_first_user_turn and system_instruction:
-            current_content = f"{system_instruction}\n\n---\n\n{current_content}"
-            is_first_user_turn = False
-
-        messages.append({
-            "role": "user" if msg["role"] == "user" else "model",
-            "parts": [{"text": current_content}]
-        })
-
-    # Add the current prompt
-    current_prompt_content = prompt
-    if is_first_user_turn and system_instruction:
-        current_prompt_content = f"{system_instruction}\n\n---\n\n{prompt}"
-
-    messages.append({"role": "user", "parts": [{"text": current_prompt_content}]})
-
-    payload = {"contents": messages}
+    # Gemini's chat history alternates between 'user' and 'model' roles.
+    # The system instruction is best placed before the first user message.
+    history = []
+    full_context = context + [{"role": "user", "content": prompt}]
     
-    # Store payload for debugging
+    for i, msg in enumerate(full_context):
+        if msg["role"] == "system": continue
+        
+        role = "user" if msg["role"] == "user" else "model"
+        
+        # Prepend system instruction to the very first user message in the history
+        if role == "user" and i == 0 and system_instruction:
+            history.append({"role": role, "parts": [{"text": f"{system_instruction}\n\n---\n\n{msg['content']}"}]})
+        else:
+            history.append({"role": role, "parts": [{"text": msg["content"]}]})
+
+
+    payload = {"contents": history}
+    
     st.session_state['last_ai_payload'] = payload
 
     try:
@@ -256,6 +246,38 @@ def call_gemini_api(prompt: str, api_key: str, context: List[Dict[str, str]]) ->
     except Exception as e:
         st.error(f"Unexpected Gemini error: {e}")
         return "Unexpected Gemini failure occurred."
+
+def list_gemini_models(api_key: str):
+    """Calls the Gemini API to list available models and displays them."""
+    url = f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}"
+    try:
+        with st.spinner("Fetching available Gemini models..."):
+            response = requests.get(url, timeout=30)
+            response.raise_for_status()
+            models = response.json().get("models", [])
+            
+            supported_models = []
+            for model in models:
+                if "generateContent" in model.get("supportedGenerationMethods", []):
+                    supported_models.append({
+                        "Model Name": model.get("name"),
+                        "Display Name": model.get("displayName"),
+                        "Description": model.get("description")
+                    })
+            
+            if supported_models:
+                st.session_state['gemini_models'] = pd.DataFrame(supported_models)
+            else:
+                st.session_state['gemini_models_error'] = "No models supporting 'generateContent' found."
+
+    except requests.exceptions.HTTPError as http_err:
+        try:
+            msg = http_err.response.json().get("error", {}).get("message", str(http_err))
+            st.session_state['gemini_models_error'] = f"Failed to list models: {msg}"
+        except Exception:
+            st.session_state['gemini_models_error'] = f"Failed to list models: {http_err}"
+    except Exception as e:
+        st.session_state['gemini_models_error'] = f"An unexpected error occurred: {e}"
 
 
 def generate_summary_prompt(clingen_data: Dict, myvariant_data: Dict, vep_data: List) -> str:
@@ -296,10 +318,21 @@ def display_ai_assistant(analysis_data: Optional[Dict]):
     for message in st.session_state.messages:
         with st.chat_message(message["role"]): st.markdown(message["content"])
 
-    # Add the debug expander
-    if 'last_ai_payload' in st.session_state:
-        with st.expander("View Last AI Request Payload for Debugging"):
+    # --- Debugging Section ---
+    with st.expander("🕵️ AI Debugging Tools"):
+        if st.button("List Available Gemini Models", key="list_models_btn"):
+            list_gemini_models(api_key)
+        
+        if 'gemini_models' in st.session_state:
+            st.success("Successfully fetched available Gemini models:")
+            st.dataframe(st.session_state['gemini_models'])
+        elif 'gemini_models_error' in st.session_state:
+            st.error(st.session_state['gemini_models_error'])
+
+        if 'last_ai_payload' in st.session_state:
+            st.markdown("**Last AI Request Payload:**")
             st.json(st.session_state['last_ai_payload'])
+    # --- End Debugging Section ---
 
     system_prompt = {"role": "system", "content": "You are a knowledgeable assistant specializing in genomics and bioinformatics. Help users understand genetic variant data. When summarizing, be accurate, cite data sources, and be traceable. You can also answer general questions."}
     
@@ -1083,5 +1116,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-
 
