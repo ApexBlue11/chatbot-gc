@@ -1119,8 +1119,6 @@ def main():
 if __name__ == "__main__":
     main()
 
-
-Here's the prompt:
 {
   "contents": [
     {
