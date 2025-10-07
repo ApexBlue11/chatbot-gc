@@ -160,7 +160,6 @@ def call_openai_api(prompt: str, api_key: str, context: List[Dict[str, str]]) ->
         "Content-Type": "application/json"
     }
 
-    # Updated model + payload structure
     payload = {
         "model": "gpt-4o-mini",
         "messages": context + [{"role": "user", "content": prompt}],
@@ -193,33 +192,34 @@ def call_openai_api(prompt: str, api_key: str, context: List[Dict[str, str]]) ->
         return "Unexpected OpenAI failure occurred."
 
 def call_gemini_api(prompt: str, api_key: str, context: List[Dict[str, str]]) -> str:
-    """Calls the Google Gemini API (v1) using the latest endpoint."""
-    api_url = f"https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash-latest:generateContent?key={api_key}"
+    """Calls the Google Gemini API (v1) using a stable model from the provided list."""
+    # Using a stable model name confirmed from user-provided CSV
+    model_name = "gemini-2.5-flash" 
+    api_url = f"https://generativelanguage.googleapis.com/v1/models/{model_name}:generateContent?key={api_key}"
     headers = {"Content-Type": "application/json"}
 
-    # Rebuild context properly for Gemini schema, injecting system prompt if needed
     messages = []
     system_instruction = next((msg["content"] for msg in context if msg["role"] == "system"), None)
     
-    # Gemini's chat history alternates between 'user' and 'model' roles.
-    # The system instruction is best placed before the first user message.
     history = []
+    # Combine context and the current prompt for processing
     full_context = context + [{"role": "user", "content": prompt}]
     
-    for i, msg in enumerate(full_context):
+    # Prepend system instruction to the very first user message in the history
+    is_first_user_turn = True
+    for msg in full_context:
         if msg["role"] == "system": continue
         
         role = "user" if msg["role"] == "user" else "model"
         
-        # Prepend system instruction to the very first user message in the history
-        if role == "user" and i == 0 and system_instruction:
-            history.append({"role": role, "parts": [{"text": f"{system_instruction}\n\n---\n\n{msg['content']}"}]})
-        else:
-            history.append({"role": role, "parts": [{"text": msg["content"]}]})
+        current_content = msg["content"]
+        if role == "user" and is_first_user_turn and system_instruction:
+            current_content = f"{system_instruction}\n\n---\n\n{current_content}"
+            is_first_user_turn = False
 
+        history.append({"role": role, "parts": [{"text": current_content}]})
 
     payload = {"contents": history}
-    
     st.session_state['last_ai_payload'] = payload
 
     try:
@@ -1118,6 +1118,5 @@ def main():
 
 if __name__ == "__main__":
     main()
-
 
 
