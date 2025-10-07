@@ -1056,11 +1056,5 @@ def main():
 if __name__ == "__main__":
     main()
 
-The entire `app.py` has been rewritten.
 
-The new `call_openai_api` function now uses `gpt-4o-mini` and `max_tokens` instead of `max_completion_tokens`. It also features improved error parsing to display more specific messages from the API.
-
-The new `call_gemini_api` function now targets the `v1` endpoint and uses the `x-goog-api-key` header for authentication. It also handles the updated content structure and provides clearer feedback on responses blocked by safety filters.
-
-These changes should resolve the API-related issues and make the AI assistant more reliable.
 
