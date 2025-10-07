@@ -329,7 +329,7 @@ def parse_caid_minimal(raw_json):
     for g in genomic:
         hgvs_list = g.get('hgvs', [])
         ref_genome = g.get('referenceGenome', '')
-        if 'GRCh38' in ref_genome and hvs_list:
+        if 'GRCh38' in ref_genome and hgvs_list:
             result['genomic_hgvs_grch38'] = hgvs_list[0]
         elif 'GRCh37' in ref_genome and hgvs_list:
             result['genomic_hgvs_grch37'] = hgvs_list[0]
