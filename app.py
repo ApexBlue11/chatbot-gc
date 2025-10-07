@@ -132,174 +132,133 @@ class GenomicQueryRouter:
 
 # --- Start of AI Assistant Functions ---
 
-def get_openai_api_key() -> Optional[str]:
-    """
-    Gets the OpenAI API key from secrets or manual input.
-    Caches the manually entered key in session state.
-    """
-    # Try to get from Streamlit secrets first (for deployed apps)
-    try:
-        api_key = st.secrets.get("OPEN_AI_API_KEY")
-        if api_key:
-            return api_key
-    except Exception:
-        pass # st.secrets is not available in all environments
-
-    # If not in secrets, try environment variables (for local dev)
-    api_key = os.environ.get("OPEN_AI_API_KEY")
-    if api_key:
-        return api_key
-
-    # Fallback to manual input if not found
-    st.warning("OpenAI API key not found. Please enter it below to use the AI Assistant.")
+def get_manual_api_key(service: str) -> Optional[str]:
+    """Gets the API key from manual input and caches it."""
+    key_name = f"{service.lower()}_api_key"
     
-    if 'manual_api_key' in st.session_state and st.session_state.manual_api_key:
-        return st.session_state.manual_api_key
-
+    if key_name in st.session_state and st.session_state[key_name]:
+        return st.session_state[key_name]
+    
+    st.warning(f"{service} API key not found. Please enter it below to use the AI Assistant.")
     manual_key = st.text_input(
-        "Enter your OpenAI API Key:",
+        f"Enter your {service} API Key:",
         type="password",
-        key="api_key_input",
-        help="You can get your key from https://platform.openai.com/account/api-keys"
+        key=f"{key_name}_input",
     )
     if manual_key:
-        st.session_state.manual_api_key = manual_key
-        st.rerun() # Rerun to use the newly entered key
-    
+        st.session_state[key_name] = manual_key
+        st.rerun()
     return None
 
+
 def call_openai_api(prompt: str, api_key: str, context: List[Dict[str, str]]) -> str:
-    """
-    Calls the OpenAI Chat Completions API using the requests library.
-    Maintains conversation context.
-    """
+    """Calls the OpenAI Chat Completions API."""
     api_url = "https://api.openai.com/v1/chat/completions"
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json"
-    }
-    
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     messages = context + [{"role": "user", "content": prompt}]
-    
-    payload = {
-        "model": "gpt-3.5-turbo", # A capable and cost-effective model
-        "messages": messages,
-        "max_tokens": 2048, # Decent context length
-        "temperature": 0.5,
-    }
+    payload = {"model": "gpt-3.5-turbo", "messages": messages, "max_tokens": 2048, "temperature": 0.5}
 
     try:
-        with st.spinner("🤖 AI Assistant is thinking..."):
+        with st.spinner("🤖 OpenAI is thinking..."):
             response = requests.post(api_url, headers=headers, json=payload, timeout=90)
-            response.raise_for_status() # Raise an exception for bad status codes
-            
+            response.raise_for_status()
             response_data = response.json()
-            ai_message = response_data["choices"][0]["message"]["content"]
-            return ai_message.strip()
-
+            return response_data["choices"][0]["message"]["content"].strip()
     except requests.exceptions.HTTPError as http_err:
-        error_details = response.json().get("error", {})
-        error_message = error_details.get("message", "An unknown HTTP error occurred.")
+        error_message = response.json().get("error", {}).get("message", "An unknown HTTP error occurred.")
         st.error(f"OpenAI API Error: {error_message}")
         return "Sorry, I encountered an error. Please check your API key and try again."
     except Exception as e:
         st.error(f"An unexpected error occurred while contacting OpenAI: {e}")
         return "Sorry, I couldn't process your request due to an unexpected error."
 
+def call_gemini_api(prompt: str, api_key: str, context: List[Dict[str, str]]) -> str:
+    """Calls the Google Gemini API."""
+    api_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key={api_key}"
+    headers = {"Content-Type": "application/json"}
+    
+    # Format context for Gemini
+    contents = []
+    for message in context + [{"role": "user", "content": prompt}]:
+        role = "user" if message["role"] == "user" else "model"
+        contents.append({"role": role, "parts": [{"text": message["content"]}]})
+
+    payload = {"contents": contents}
+
+    try:
+        with st.spinner("🤖 Gemini is thinking..."):
+            response = requests.post(api_url, headers=headers, json=payload, timeout=90)
+            response.raise_for_status()
+            response_data = response.json()
+            return response_data['candidates'][0]['content']['parts'][0]['text'].strip()
+    except requests.exceptions.HTTPError as http_err:
+        error_message = response.json().get("error", {}).get("message", "An unknown HTTP error occurred.")
+        st.error(f"Gemini API Error: {error_message}")
+        return "Sorry, I encountered an error. Please check your API key and try again."
+    except Exception as e:
+        st.error(f"An unexpected error occurred while contacting Gemini: {e}")
+        return "Sorry, I couldn't process your request due to an unexpected error."
+
+
 def generate_summary_prompt(clingen_data: Dict, myvariant_data: Dict, vep_data: List) -> str:
     """Creates a detailed prompt for the AI to summarize the variant data."""
-    
-    # Prune large, less relevant fields to fit within context limits if necessary
     if myvariant_data and 'dbnsfp' in myvariant_data:
         myvariant_data['dbnsfp'] = {
             k: v for k, v in myvariant_data['dbnsfp'].items()
             if k in ['sift', 'polyphen2_hdiv', 'polyphen2_hvar', 'cadd', 'revel', 'gerp++_rs']
         }
-
     summary_instruction = """
-    Please provide a comprehensive but clear summary of the genetic variant data provided below. 
-    Organize your summary into the following sections:
-    
-    1.  **Variant Identification**: State the key identifiers like HGVS notation, RSID, and ClinGen Allele ID (CAid).
-    2.  **Clinical Significance**: Detail the findings from ClinVar, including the clinical significance, review status, and any associated conditions. Quote the significance term directly.
-    3.  **Population Frequencies**: Report the highest overall allele frequency from gnomAD (exome or genome) and mention the source database. Note if the variant is common, rare, or very rare based on this frequency.
-    4.  **Functional Predictions**: Summarize the predictions from SIFT and PolyPhen. For each, provide the score and the qualitative prediction (e.g., 'deleterious', 'benign').
-    5.  **Transcript and Gene Consequences**: Based on the VEP data, describe the most significant molecular consequence (e.g., 'missense_variant'), the affected gene, and the impact level (e.g., 'MODERATE').
-    
-    **Crucially, you must adhere to these rules**:
-    -   **Accuracy**: Report all values and terms exactly as they appear in the data. Do not make up information.
-    -   **Traceability**: When you state a fact, implicitly reference its source (e.g., "ClinVar reports...", "According to VEP...", "The SIFT score is...").
-    -   **Clarity**: Explain technical terms briefly if necessary for a non-expert audience.
+    Please provide a comprehensive but clear summary of the genetic variant data provided below. Organize your summary into sections:
+    1.  **Variant Identification**: State key identifiers (HGVS, RSID, ClinGen Allele ID).
+    2.  **Clinical Significance**: Detail ClinVar findings (significance, review status, conditions).
+    3.  **Population Frequencies**: Report the highest overall gnomAD allele frequency and its source. Note if the variant is common, rare, etc.
+    4.  **Functional Predictions**: Summarize SIFT and PolyPhen predictions (score and qualitative prediction).
+    5.  **Transcript/Gene Consequences**: Describe the most significant VEP molecular consequence, affected gene, and impact level.
+    **Rules**: Be accurate, traceable to the source data, and clear.
     """
-
-    # We only include data that is present to keep the prompt clean
     data_parts = [summary_instruction]
-    if clingen_data:
-        data_parts.append(f"**ClinGen Data:**\n{json.dumps(clingen_data, indent=2)}")
-    if myvariant_data:
-        data_parts.append(f"**MyVariant.info Data:**\n{json.dumps(myvariant_data, indent=2)}")
-    if vep_data:
-        data_parts.append(f"**Ensembl VEP Data:**\n{json.dumps(vep_data, indent=2)}")
-
+    if clingen_data: data_parts.append(f"**ClinGen Data:**\n{json.dumps(clingen_data, indent=2)}")
+    if myvariant_data: data_parts.append(f"**MyVariant.info Data:**\n{json.dumps(myvariant_data, indent=2)}")
+    if vep_data: data_parts.append(f"**Ensembl VEP Data:**\n{json.dumps(vep_data, indent=2)}")
     return "\n\n".join(data_parts)
 
 def display_ai_assistant(analysis_data: Optional[Dict]):
     """Renders the AI Assistant UI."""
     st.markdown('<div class="section-header">🤖 AI Assistant</div>', unsafe_allow_html=True)
     
-    api_key = get_openai_api_key()
+    st.sidebar.markdown("### 🤖 AI Assistant Settings")
+    ai_service = st.sidebar.radio("Select AI Service", ('OpenAI', 'Google Gemini'))
+
+    api_key = get_manual_api_key(ai_service)
     if not api_key:
         st.info("The AI Assistant is unavailable until an API key is provided.")
         return
 
-    # Initialize chat history in session state
-    if "messages" not in st.session_state:
-        st.session_state.messages = []
-
-    # Display past messages
+    if "messages" not in st.session_state: st.session_state.messages = []
     for message in st.session_state.messages:
-        with st.chat_message(message["role"]):
-            st.markdown(message["content"])
+        with st.chat_message(message["role"]): st.markdown(message["content"])
 
-    # System prompt for the AI's persona
-    system_prompt = {
-        "role": "system",
-        "content": "You are a knowledgeable assistant specializing in genomics and bioinformatics. Your role is to help users understand genetic variant data. When asked to summarize, be accurate, cite data sources, and be traceable. You can also answer general questions."
-    }
+    system_prompt = {"role": "system", "content": "You are a knowledgeable assistant specializing in genomics and bioinformatics. Help users understand genetic variant data. When summarizing, be accurate, cite data sources, and be traceable. You can also answer general questions."}
     
-    # Action buttons
     if analysis_data:
         if st.button("🔍 Summarize & Interpret Results", key="summarize_ai"):
-            prompt = generate_summary_prompt(
-                analysis_data.get('clingen_data'),
-                analysis_data.get('annotations', {}).get('myvariant_data'),
-                analysis_data.get('annotations', {}).get('vep_data')
-            )
-            # Add user message to history
+            prompt = generate_summary_prompt(analysis_data.get('clingen_data'), analysis_data.get('annotations', {}).get('myvariant_data'), analysis_data.get('annotations', {}).get('vep_data'))
             st.session_state.messages.append({"role": "user", "content": "Please summarize and interpret the results."})
-            # Get AI response
-            response = call_openai_api(prompt, api_key, context=[system_prompt])
-            # Add AI response to history
+            
+            if ai_service == 'OpenAI': response = call_openai_api(prompt, api_key, context=[system_prompt])
+            else: response = call_gemini_api(prompt, api_key, context=[system_prompt])
+            
             st.session_state.messages.append({"role": "assistant", "content": response})
             st.rerun()
 
-    # User input chat box
     if prompt := st.chat_input("Ask a question about the results or a general query..."):
-        # Add user's message to chat history
         st.session_state.messages.append({"role": "user", "content": prompt})
+        with st.chat_message("user"): st.markdown(prompt)
         
-        # Display user's message
-        with st.chat_message("user"):
-            st.markdown(prompt)
+        if ai_service == 'OpenAI': ai_response = call_openai_api(prompt, api_key, context=[system_prompt] + st.session_state.messages)
+        else: ai_response = call_gemini_api(prompt, api_key, context=[system_prompt] + st.session_state.messages)
         
-        # Get AI response
-        ai_response = call_openai_api(prompt, api_key, context=[system_prompt] + st.session_state.messages)
-        
-        # Display AI response
-        with st.chat_message("assistant"):
-            st.markdown(ai_response)
-        
-        # Add AI's response to chat history
+        with st.chat_message("assistant"): st.markdown(ai_response)
         st.session_state.messages.append({"role": "assistant", "content": ai_response})
 
 # --- End of AI Assistant Functions ---
@@ -561,7 +520,9 @@ def display_comprehensive_myvariant_data(myvariant_data):
             st.write(f"**Reference:** {ref}")
             st.write(f"**Alternate:** {alt}")
         with col3:
-            gene_name = (myvariant_data.get('genename') or myvariant_data.get('gene') or myvariant_data.get('symbol') or 'N/A')
+            gene_name = (myvariant_data.get('clinvar', {}).get('gene', {}).get('symbol') or 
+                         myvariant_data.get('snpeff', {}).get('ann', [{}])[0].get('genename') or 
+                         myvariant_data.get('dbnsfp', {}).get('genename', [None])[0] or 'N/A')
             st.write(f"**Gene:** {gene_name}")
             rsid = myvariant_data.get('rsid') or myvariant_data.get('dbsnp', {}).get('rsid') or 'N/A'
             st.write(f"**RSID:** {rsid}")
@@ -671,14 +632,61 @@ def display_comprehensive_myvariant_data(myvariant_data):
                         if not chart_data.empty: st.bar_chart(chart_data)
                     else: st.info("No gnomAD genome populations match the current filter settings.")
         
-        with freq_tabs[2]: # 1000 Genomes (Original code restored)
-             st.info("1000 Genomes data display is not implemented in this restored version.")
+        with freq_tabs[2]: # 1000 Genomes
+            kg_data = myvariant_data.get('dbnsfp', {}).get('1000gp3', {})
+            if kg_data:
+                st.markdown("**1000 Genomes Project Phase 3**")
+                if isinstance(kg_data, list): kg_data = kg_data[0] # Handle list case
+                
+                pop_data = []
+                populations = {'af':'Global', 'afr_af':'African', 'amr_af':'American', 'eas_af':'East Asian', 'eur_af':'European', 'sas_af':'South Asian'}
+                for key, name in populations.items():
+                    freq = kg_data.get(key)
+                    if freq is not None and freq > 0 and freq <= freq_threshold:
+                        pop_data.append({'Population': name, 'Frequency': freq})
+                
+                if pop_data:
+                    st.dataframe(pd.DataFrame(pop_data), use_container_width=True)
+                else:
+                    st.info("No 1000 Genomes populations match the current filter.")
+            else:
+                st.info("No 1000 Genomes data available.")
         
-        with freq_tabs[3]: # ExAC (Original code restored)
-             st.info("ExAC data display is not implemented in this restored version.")
+        with freq_tabs[3]: # ExAC
+            exac_data = myvariant_data.get('exac', {})
+            if exac_data:
+                st.markdown("**Exome Aggregation Consortium (ExAC)**")
+                if isinstance(exac_data, list): exac_data = exac_data[0]
+                pop_data = []
+                populations = {'af':'Global', 'af_afr':'African', 'af_amr':'Latino', 'af_eas':'East Asian', 'af_fin':'Finnish', 'af_nfe':'Non-Finnish European', 'af_sas':'South Asian', 'af_oth':'Other'}
+                for key, name in populations.items():
+                    freq = exac_data.get(key)
+                    if freq is not None and freq > 0 and freq <= freq_threshold:
+                        pop_data.append({'Population': name, 'Frequency': freq})
+                if pop_data:
+                    st.dataframe(pd.DataFrame(pop_data), use_container_width=True)
+                else:
+                    st.info("No ExAC populations match the current filter.")
+            else:
+                st.info("No ExAC data available.")
         
-        with freq_tabs[4]: # Raw Data (Original code restored)
-            st.info("Raw frequency data display is not implemented in this restored version.")
+        with freq_tabs[4]: # Raw Data
+            st.markdown("**All Available Frequency Fields**")
+            freq_fields = {}
+            def collect_freq_fields(data, prefix=""):
+                for key, value in data.items():
+                    full_key = f"{prefix}.{key}" if prefix else key
+                    if 'af' in key.lower() or 'freq' in key.lower():
+                        if isinstance(value, (int, float)) and value > 0 and value <= freq_threshold:
+                            freq_fields[full_key] = value
+                    elif isinstance(value, dict):
+                        collect_freq_fields(value, full_key)
+            collect_freq_fields(myvariant_data)
+            if freq_fields:
+                st.dataframe(pd.DataFrame([{'Field': k, 'Frequency': v} for k,v in sorted(freq_fields.items())]), use_container_width=True)
+            else:
+                st.info("No frequency fields match the current filter.")
+
 
     with data_tabs[3]: # ClinVar
         st.subheader("ClinVar Clinical Annotations")
@@ -979,7 +987,7 @@ def main():
     st.markdown("""
     <div style="text-align: center; color: #666; font-size: 0.9rem;">
         <p>🧬 <strong>Genetic Variant Analyzer</strong></p>
-        <p>Data sources: ClinGen Allele Registry • MyVariant.info • Ensembl VEP • OpenAI</p>
+        <p>Data sources: ClinGen Allele Registry • MyVariant.info • Ensembl VEP • OpenAI • Google Gemini</p>
         <p>For research purposes only • Not for clinical use</p>
     </div>
     """, unsafe_allow_html=True)
