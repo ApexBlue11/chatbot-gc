@@ -160,6 +160,7 @@ def call_openai_api(prompt: str, api_key: str, context: List[Dict[str, str]]) ->
         "Content-Type": "application/json"
     }
 
+    # Updated model + payload structure
     payload = {
         "model": "gpt-4o-mini",
         "messages": context + [{"role": "user", "content": prompt}],
@@ -193,9 +194,10 @@ def call_openai_api(prompt: str, api_key: str, context: List[Dict[str, str]]) ->
 
 def call_gemini_api(prompt: str, api_key: str, context: List[Dict[str, str]]) -> str:
     """Calls the Google Gemini API (v1) using the latest endpoint."""
-    api_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key={api_key}"
+    api_url = f"https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash-latest:generateContent?key={api_key}"
     headers = {"Content-Type": "application/json"}
 
+    # Rebuild context properly for Gemini schema, injecting system prompt if needed
     messages = []
     system_instruction = next((msg["content"] for msg in context if msg["role"] == "system"), None)
     
@@ -1116,4 +1118,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
