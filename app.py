@@ -164,9 +164,12 @@ def call_openai_api(prompt: str, api_key: str, context: List[Dict[str, str]]) ->
     payload = {
         "model": "gpt-4o-mini",
         "messages": context + [{"role": "user", "content": prompt}],
-        "max_tokens": 2048,
+        "max_tokens": 2048, # Correct parameter for max output tokens
         "temperature": 0.5
     }
+    
+    # Store payload for debugging
+    st.session_state['last_ai_payload'] = payload
 
     try:
         with st.spinner("🤖 OpenAI is thinking..."):
@@ -192,19 +195,40 @@ def call_openai_api(prompt: str, api_key: str, context: List[Dict[str, str]]) ->
 
 def call_gemini_api(prompt: str, api_key: str, context: List[Dict[str, str]]) -> str:
     """Calls the Google Gemini API (v1) using the latest endpoint."""
-    api_url = "https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent"
-    headers = {
-        "Content-Type": "application/json",
-        "x-goog-api-key": api_key
-    }
+    api_url = f"https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key={api_key}"
+    headers = {"Content-Type": "application/json"}
 
-    # Rebuild context properly for Gemini schema
-    messages = [{"role": "user" if msg["role"] == "user" else "model", "parts": [{"text": msg["content"]}]} for msg in context if msg["role"] != "system"]
+    # Rebuild context properly for Gemini schema, injecting system prompt if needed
+    messages = []
     system_instruction = next((msg["content"] for msg in context if msg["role"] == "system"), None)
+    
+    is_first_user_turn = True
+    for msg in context:
+        if msg["role"] == "system":
+            continue
+        
+        current_content = msg["content"]
+        # Prepend system instruction to the very first user message in the history
+        if msg["role"] == "user" and is_first_user_turn and system_instruction:
+            current_content = f"{system_instruction}\n\n---\n\n{current_content}"
+            is_first_user_turn = False
 
-    payload = {"contents": messages + [{"role": "user", "parts": [{"text": prompt}]}]}
-    if system_instruction:
-        payload["system_instruction"] = {"parts": [{"text": system_instruction}]}
+        messages.append({
+            "role": "user" if msg["role"] == "user" else "model",
+            "parts": [{"text": current_content}]
+        })
+
+    # Add the current prompt
+    current_prompt_content = prompt
+    if is_first_user_turn and system_instruction:
+        current_prompt_content = f"{system_instruction}\n\n---\n\n{prompt}"
+
+    messages.append({"role": "user", "parts": [{"text": current_prompt_content}]})
+
+    payload = {"contents": messages}
+    
+    # Store payload for debugging
+    st.session_state['last_ai_payload'] = payload
 
     try:
         with st.spinner("🤖 Gemini is thinking..."):
@@ -212,7 +236,6 @@ def call_gemini_api(prompt: str, api_key: str, context: List[Dict[str, str]]) ->
             response.raise_for_status()
             data = response.json()
 
-            # Handle safety / blocking responses cleanly
             if "candidates" not in data or not data["candidates"]:
                 feedback = data.get("promptFeedback", {}).get("blockReason", "unknown")
                 return f"Gemini response was blocked (reason: {feedback})."
@@ -272,6 +295,11 @@ def display_ai_assistant(analysis_data: Optional[Dict]):
     if "messages" not in st.session_state: st.session_state.messages = []
     for message in st.session_state.messages:
         with st.chat_message(message["role"]): st.markdown(message["content"])
+
+    # Add the debug expander
+    if 'last_ai_payload' in st.session_state:
+        with st.expander("View Last AI Request Payload for Debugging"):
+            st.json(st.session_state['last_ai_payload'])
 
     system_prompt = {"role": "system", "content": "You are a knowledgeable assistant specializing in genomics and bioinformatics. Help users understand genetic variant data. When summarizing, be accurate, cite data sources, and be traceable. You can also answer general questions."}
     
@@ -1055,6 +1083,5 @@ def main():
 
 if __name__ == "__main__":
     main()
-
 
 
