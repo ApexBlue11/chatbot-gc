@@ -1345,11 +1345,6 @@ def main():
         st.markdown("### Supported Formats")
         st.code("HGVS: NM_002496.3:c.64C>T")
         st.code("RSID: rs369602258")
-        st.markdown("### Example Variants")
-        if st.button("Load Example 1: NDUFS8", key="example1"):
-            st.session_state.example_input = "NM_002496.3:c.64C>T"
-        if st.button("Load Example 2: BRCA1", key="example2"):
-            st.session_state.example_input = "NM_007294.3:c.5266dupC"
         
         st.sidebar.markdown("### 📊 Population Filters")
         st.session_state.freq_threshold = st.sidebar.slider(
