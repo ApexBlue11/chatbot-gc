@@ -1354,7 +1354,7 @@ def main():
 
     st.markdown('<div class="section-header">Variant Input</div>', unsafe_allow_html=True)
     default_value = getattr(st.session_state, 'example_input', "")
-    user_input = st.text_input("Enter a genetic variant (HGVS notation or RSID):", value=default_value, placeholder="e.g., NM_002496.3:c.64C>T, key="variant_input")
+    user_input = st.text_input("Enter a genetic variant (HGVS notation or RSID):", value=default_value, placeholder="e.g., NM_002496.3:c.64C>T", key="variant_input")
     
     if hasattr(st.session_state, 'example_input'):
         delattr(st.session_state, 'example_input')
