@@ -333,8 +333,20 @@ def call_openai_api(prompt: str, api_key: str, context: List[Dict[str, str]]) ->
                 st.error("🔑 Invalid API key. Please check your OpenAI API key.")
                 return "Authentication failed. Please verify your API key."
             elif http_err.response.status_code == 429:
-                st.error("⚠️ Rate limit exceeded or quota depleted.")
-                return "Rate limit exceeded. Please wait or check your OpenAI quota."
+                st.error("⚠️ OpenAI Rate Limit / Quota Issue")
+                st.warning("""
+                **Possible causes:**
+                - You've exceeded your requests per minute (RPM) or tokens per minute (TPM)
+                - Your account has no remaining credits
+                - You're on a free tier with strict limits
+                
+                **Solutions:**
+                - Check your usage at: https://platform.openai.com/usage
+                - Add credits at: https://platform.openai.com/account/billing
+                - Wait a minute and try again
+                - Use Google Gemini instead (free tier available)
+                """)
+                return "Rate limit exceeded. Please check your OpenAI quota or wait before retrying."
             elif http_err.response.status_code == 400:
                 st.error(f"❌ Bad request: {error_msg}")
                 return f"Request error: {error_msg}"
@@ -363,9 +375,11 @@ def call_openai_api(prompt: str, api_key: str, context: List[Dict[str, str]]) ->
 
 def call_gemini_api(prompt: str, api_key: str, context: List[Dict[str, str]]) -> str:
     """Calls Google Gemini API with proper system instruction handling."""
-    api_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
+    # Get model from session state or use default
+    model_name = st.session_state.get('gemini_model', 'gemini-2.5-flash')
+    api_url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
     
-    log_debug("Starting Gemini API call", level="INFO")
+    log_debug(f"Starting Gemini API call with model: {model_name}", level="INFO")
     
     headers = {"Content-Type": "application/json"}
     
@@ -526,6 +540,22 @@ def call_gemini_api(prompt: str, api_key: str, context: List[Dict[str, str]]) ->
                 else:
                     st.error(f"❌ Bad request: {error_msg}")
                     return f"Request error: {error_msg}"
+            elif http_err.response.status_code == 404:
+                st.error("❌ Model Not Found")
+                st.warning(f"""
+                **The model endpoint was not found.**
+                
+                Current model: `{st.session_state.get('gemini_model', 'unknown')}`
+                
+                **Available models:**
+                - gemini-2.5-flash (recommended - latest)
+                - gemini-2.0-flash-exp
+                - gemini-1.5-pro
+                - gemini-1.5-flash
+                
+                Try selecting a different model from the sidebar.
+                """)
+                return "Model not found. Please select a different Gemini model."
             elif http_err.response.status_code == 429:
                 st.error("⚠️ Rate limit exceeded or quota depleted.")
                 return "Rate limit exceeded. Please wait or check your Gemini quota."
@@ -610,6 +640,16 @@ def display_ai_assistant(analysis_data: Optional[Dict]):
     # AI service selection
     st.sidebar.markdown("### 🤖 AI Assistant Settings")
     ai_service = st.sidebar.radio("Select AI Service", ('OpenAI', 'Google Gemini'))
+    
+    # Model selection for Gemini
+    if ai_service == 'Google Gemini':
+        gemini_model = st.sidebar.selectbox(
+            "Gemini Model",
+            ['gemini-2.5-flash', 'gemini-2.0-flash-exp', 'gemini-1.5-flash', 'gemini-1.5-pro'],
+            index=0,
+            help="Gemini 2.5 Flash is recommended for best performance"
+        )
+        st.session_state['gemini_model'] = gemini_model
     
     # Get API key
     api_key = get_manual_api_key(ai_service)
@@ -1457,4 +1497,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
