@@ -70,7 +70,7 @@ st.markdown("""
     margin: 1rem 0;
 }
 .stChatMessage {
-    background-color: #0818A8;
+    background-color: 36454F;
     border-radius: 0.5rem;
     padding: 1rem;
     margin-bottom: 1rem;
