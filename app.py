@@ -691,8 +691,7 @@ def display_ai_assistant(analysis_data: Optional[Dict]):
         st.session_state['gemini_model'] = gemini_model
         
         # Add model list button
-        if st.sidebar.button("🔍 List Available Models", key="list_gemini_models"):
-            list_gemini_models(api_key)
+
     
     # Get API key
     api_key = get_manual_api_key(ai_service)
