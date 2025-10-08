@@ -1343,7 +1343,6 @@ def main():
         """)
         st.markdown("### Supported Formats")
         st.code("HGVS: NM_002496.3:c.64C>T")
-        st.code("RSID: rs369602258")
         
         st.sidebar.markdown("### 📊 Population Filters")
         st.session_state.freq_threshold = st.sidebar.slider(
