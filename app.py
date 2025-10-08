@@ -335,18 +335,19 @@ def call_openai_api(prompt: str, api_key: str, context: List[Dict[str, str]]) ->
             elif http_err.response.status_code == 429:
                 st.error("⚠️ OpenAI Rate Limit / Quota Issue")
                 st.warning("""
-                **Possible causes:**
-                - You've exceeded your requests per minute (RPM) or tokens per minute (TPM)
-                - Your account has no remaining credits
-                - You're on a free tier with strict limits
+                **OpenAI Free Tier Limits (Most Likely Cause):**
+                - Free tier: Only **3 requests per minute (RPM)**
+                - You need to wait 60 seconds between requests
+                - Your $18 credit is fine - this is about request frequency, not cost
                 
                 **Solutions:**
-                - Check your usage at: https://platform.openai.com/usage
-                - Add credits at: https://platform.openai.com/account/billing
-                - Wait a minute and try again
-                - Use Google Gemini instead (free tier available)
+                1. Wait 1 minute and try again
+                2. Upgrade to Tier 1 ($5 minimum spend) for 500 RPM
+                3. Use Google Gemini instead (free tier has better limits)
+                
+                **Check your tier at:** https://platform.openai.com/account/limits
                 """)
-                return "Rate limit exceeded. Please check your OpenAI quota or wait before retrying."
+                return "Rate limit (3 RPM for free tier). Wait 60 seconds or use Gemini."
             elif http_err.response.status_code == 400:
                 st.error(f"❌ Bad request: {error_msg}")
                 return f"Request error: {error_msg}"
@@ -377,7 +378,8 @@ def call_gemini_api(prompt: str, api_key: str, context: List[Dict[str, str]]) ->
     """Calls Google Gemini API with proper system instruction handling."""
     # Get model from session state or use default
     model_name = st.session_state.get('gemini_model', 'gemini-2.5-flash')
-    api_url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
+    # FIXED: Use v1 endpoint instead of v1beta and correct URL structure
+    api_url = f"https://generativelanguage.googleapis.com/v1/models/{model_name}:generateContent?key={api_key}"
     
     log_debug(f"Starting Gemini API call with model: {model_name}", level="INFO")
     
@@ -385,49 +387,35 @@ def call_gemini_api(prompt: str, api_key: str, context: List[Dict[str, str]]) ->
     
     # Extract system instruction
     system_instruction = None
-    conversation_history = []
+    history = []
     
-    for msg in context:
+    # Combine context and the current prompt for processing
+    full_context = context + [{"role": "user", "content": prompt}]
+    
+    # Prepend system instruction to the very first user message in the history
+    is_first_user_turn = True
+    for msg in full_context:
         if msg["role"] == "system":
             system_instruction = msg["content"]
             log_debug("System instruction found", {"preview": system_instruction[:100]}, level="DEBUG")
-        else:
-            conversation_history.append(msg)
-    
-    # Build contents array for Gemini
-    contents = []
-    for msg in conversation_history:
-        contents.append({
-            "role": "user" if msg["role"] == "user" else "model",
-            "parts": [{"text": msg["content"]}]
-        })
-    
-    # Add current prompt
-    contents.append({
-        "role": "user",
-        "parts": [{"text": prompt}]
-    })
+            continue
+        
+        role = "user" if msg["role"] == "user" else "model"
+        
+        current_content = msg["content"]
+        # FIXED: Prepend system instruction to first user message instead of using systemInstruction field
+        if role == "user" and is_first_user_turn and system_instruction:
+            current_content = f"{system_instruction}\n\n---\n\n{current_content}"
+            is_first_user_turn = False
+        
+        history.append({"role": role, "parts": [{"text": current_content}]})
     
     # Build payload with proper structure
-    payload = {"contents": contents}
-    
-    # Add system instruction if present (Gemini's proper way)
-    if system_instruction:
-        payload["systemInstruction"] = {
-            "parts": [{"text": system_instruction}]
-        }
-    
-    # Add generation config
-    payload["generationConfig"] = {
-        "temperature": 0.7,
-        "topK": 40,
-        "topP": 0.95,
-        "maxOutputTokens": 2048,
-    }
+    payload = {"contents": history}
     
     log_debug("Gemini Request Payload", {
         "url": api_url[:100] + "...",  # Don't log full API key
-        "contents_count": len(contents),
+        "contents_count": len(history),
         "has_system_instruction": system_instruction is not None,
         "last_message_preview": prompt[:100] + "..." if len(prompt) > 100 else prompt,
         "full_payload": payload
@@ -494,9 +482,23 @@ def call_gemini_api(prompt: str, api_key: str, context: List[Dict[str, str]]) ->
             
             if not parts:
                 log_debug("No parts in Gemini response", candidate, level="ERROR")
-                return "Gemini returned empty response."
+                st.error("❌ Gemini returned empty response")
+                st.info("""
+                **Possible causes:**
+                - Content was filtered/blocked
+                - Model doesn't support the request format
+                - Try a different model from the sidebar
+                
+                **Finish reason:** {}
+                """.format(finish_reason))
+                return "Gemini returned empty response. Check debug logs or try a different model."
             
             text = "".join([p.get("text", "") for p in parts])
+            
+            if not text or text.strip() == "":
+                log_debug("Gemini returned empty text", {"parts": parts, "finish_reason": finish_reason}, level="ERROR")
+                st.error(f"❌ Gemini returned empty text (finish reason: {finish_reason})")
+                return "Gemini returned empty text. The response may have been filtered."
             
             # Log token usage if available
             if "usageMetadata" in data:
@@ -582,6 +584,43 @@ def call_gemini_api(prompt: str, api_key: str, context: List[Dict[str, str]]) ->
 
 # ==================== PROMPT GENERATION ====================
 
+def list_gemini_models(api_key: str):
+    """Calls the Gemini API to list available models and displays them."""
+    url = f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}"
+    try:
+        with st.spinner("Fetching available Gemini models..."):
+            response = requests.get(url, timeout=30)
+            response.raise_for_status()
+            models = response.json().get("models", [])
+            
+            supported_models = []
+            for model in models:
+                if "generateContent" in model.get("supportedGenerationMethods", []):
+                    supported_models.append({
+                        "Model Name": model.get("name"),
+                        "Display Name": model.get("displayName"),
+                        "Description": model.get("description")
+                    })
+            
+            if supported_models:
+                st.session_state['gemini_models'] = pd.DataFrame(supported_models)
+                log_debug(f"Found {len(supported_models)} Gemini models", level="SUCCESS")
+            else:
+                st.session_state['gemini_models_error'] = "No models supporting 'generateContent' found."
+                log_debug("No compatible Gemini models found", level="WARNING")
+
+    except requests.exceptions.HTTPError as http_err:
+        try:
+            msg = http_err.response.json().get("error", {}).get("message", str(http_err))
+            st.session_state['gemini_models_error'] = f"Failed to list models: {msg}"
+            log_debug(f"Failed to list Gemini models: {msg}", level="ERROR")
+        except Exception:
+            st.session_state['gemini_models_error'] = f"Failed to list models: {http_err}"
+            log_debug(f"Failed to list Gemini models: {http_err}", level="ERROR")
+    except Exception as e:
+        st.session_state['gemini_models_error'] = f"An unexpected error occurred: {e}"
+        log_debug(f"Unexpected error listing models: {e}", level="ERROR")
+
 def generate_summary_prompt(clingen_data: Dict, myvariant_data: Dict, vep_data: List) -> str:
     """Creates a detailed prompt for AI to summarize variant data."""
     
@@ -650,6 +689,10 @@ def display_ai_assistant(analysis_data: Optional[Dict]):
             help="Gemini 2.5 Flash is recommended for best performance"
         )
         st.session_state['gemini_model'] = gemini_model
+        
+        # Add model list button
+        if st.sidebar.button("🔍 List Available Models", key="list_gemini_models"):
+            list_gemini_models(api_key)
     
     # Get API key
     api_key = get_manual_api_key(ai_service)
@@ -671,6 +714,15 @@ def display_ai_assistant(analysis_data: Optional[Dict]):
     if 'last_ai_payload' in st.session_state:
         with st.expander(f"🔍 Last {st.session_state.get('last_ai_service', 'AI')} Request Payload"):
             st.json(st.session_state['last_ai_payload'])
+    
+    # Show Gemini models if available
+    if ai_service == 'Google Gemini':
+        if 'gemini_models' in st.session_state:
+            with st.expander("✅ Available Gemini Models"):
+                st.dataframe(st.session_state['gemini_models'], use_container_width=True)
+        elif 'gemini_models_error' in st.session_state:
+            with st.expander("❌ Model List Error"):
+                st.error(st.session_state['gemini_models_error'])
     
     # System prompt
     system_prompt = {
